@@ -67,7 +67,13 @@ const (
 	failureDeletingVmiErrFormat           = "Failure attempting to delete VMI: %v"
 )
 
-const defaultMaxCrashLoopBackoffDelaySeconds = 300
+const (
+	defaultMaxCrashLoopBackoffDelaySeconds = 300
+
+	// defaultPendingPVCTimeout is the default amount of time after which
+	// a pending PVC is considered to fail binding/dynamic provisioning
+	defaultPendingPVCTimeout = 5 * time.Minute
+)
 
 func NewVMController(vmiInformer cache.SharedIndexInformer,
 	vmInformer cache.SharedIndexInformer,
@@ -554,18 +560,55 @@ func (c *VMController) hasPVCBindingErrors(vm *virtv1.VirtualMachine) bool {
 			continue
 		}
 
-		failed, message, err := typesutil.IsPVCFailedProvisioning(
-			c.pvcInformer.GetStore(),
-			c.storageClassInformer.GetStore(),
-			vm.Namespace, claimName)
-
+		pvcKey := controller.NamespacedKey(vm.Namespace, claimName)
+		pvcObj, exists, err := c.pvcInformer.GetStore().GetByKey(pvcKey)
 		if err != nil {
-			log.Log.Object(vm).Errorf("Error detecting volume provisioning status: %v", err)
-			return false
+			log.Log.Object(vm).Errorf("Error fetching PersistentVolumeClaim %s: %v", pvcKey, err)
+			continue
 		}
-		if failed {
-			log.Log.Object(vm).Warningf("Volume provisioning error detected: %s", message)
+		if !exists {
+			log.Log.Object(vm).Warningf("PVC %s does not exists", pvcKey)
+			continue
+		}
+		pvc, ok := pvcObj.(*k8score.PersistentVolumeClaim)
+		if !ok {
+			log.Log.Object(vm).Errorf("Error converting %s to a PVC: object is of type %T", pvcKey, pvcObj)
+			continue
+		}
+
+		switch pvc.Status.Phase {
+		case k8score.ClaimBound:
+			continue
+		case k8score.ClaimLost:
+			log.Log.Object(vm).Warningf("PVC %s has lost its underlying PersistentVolume (%s)", pvcKey, pvc.Spec.VolumeName)
 			return true
+		case k8score.ClaimPending:
+			pendingTimeout := defaultPendingPVCTimeout
+			if requestedTimeoutValue, ok := pvc.Annotations[virtv1.FuncTestPendingPVCTimeoutAnnotation]; ok {
+				requestedTimeout, err := time.ParseDuration(requestedTimeoutValue)
+				if err != nil {
+					log.Log.Object(vm).Errorf("Invalid '%s' annotation value specified for PersistentVolumeClaim %s: expected a duration, got %s",
+						virtv1.FuncTestPendingPVCTimeoutAnnotation, pvcKey, requestedTimeoutValue)
+				} else {
+					pendingTimeout = requestedTimeout
+				}
+			}
+
+			pendingDuration := time.Now().Sub(pvc.CreationTimestamp.Time)
+			if pendingDuration >= pendingTimeout {
+				isWFFC, err := typesutil.IsWaitForFirstConsumer(pvc, c.storageClassInformer.GetStore())
+				if err != nil {
+					log.Log.Object(vm).Errorf("Error determining binding mode for PersistentVolumeClaim %s: %v", pvcKey, err)
+					continue
+				}
+				if isWFFC {
+					// For WaitForFirstConsumer PVCs, it's perfectly normal to be pending for long time
+					// until a consumer pod is scheduled.
+					continue
+				}
+				return true
+			}
+
 		}
 	}
 

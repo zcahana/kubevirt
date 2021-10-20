@@ -831,6 +831,11 @@ var _ = Describe("[rfe_id:1177][crit:medium][vendor:cnv-qe@redhat.com][level:com
 			vmi, _ := newVirtualMachineInstanceWithContainerDisk()
 			tests.AddPVCDisk(vmi, "disk2", "virtio", pvc.Name)
 
+			// Force a short timeout
+			pvc.Annotations = map[string]string{
+				v1.FuncTestPendingPVCTimeoutAnnotation: fmt.Sprint(3 * time.Second),
+			}
+
 			pvc.Namespace = vmi.Namespace
 			_, err := virtClient.CoreV1().PersistentVolumeClaims(pvc.Namespace).Create(context.TODO(), pvc, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())

@@ -676,6 +676,8 @@ const (
 	FuncTestBlockLauncherPrepareMigrationTargetAnnotation string = "kubevirt.io/func-test-block-migration-target-preparation"
 	// Used by functional tests to simulate virt-launcher crash looping
 	FuncTestLauncherFailFastAnnotation string = "kubevirt.io/func-test-virt-launcher-fail-fast"
+	// Used by functional tests to force a short timeout for considering a pending PVC as in error.
+	FuncTestPendingPVCTimeoutAnnotation string = "kubevirt.io/func-test-pending-pvc-timeout"
 	// This label is used to match virtual machine instance IDs with pods.
 	// Similar to kubevirt.io/domain. Used on Pod.
 	// Internal use only.

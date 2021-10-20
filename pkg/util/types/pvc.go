@@ -22,7 +22,6 @@ package types
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	k8sv1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -30,67 +29,6 @@ import (
 
 	virtv1 "kubevirt.io/client-go/api/v1"
 )
-
-const (
-	// pendingPVCTimeoutThreshold is the amount of time after which
-	// a pending PVC is considered to fail binding/dynamic provisioning
-	pendingPVCTimeoutThreshold = 5 * time.Minute
-)
-
-// IsPVCFailedProvisioning detects whether a failure has occurred while provisioning a PersistentVolumeClaim.
-// If such failure is detected, 'true' is returned alongside the failure message, and 'false' otherwise.
-// If an error occurs during detection, a non-nil err will be returned.
-//
-// The pvcEventIndexer argument should contain an index named "pvc" which indexes PVCs according to their
-// involved object of type PersistentVolumeClaim.
-func IsPVCFailedProvisioning(pvcStore cache.Store, storageClassStore cache.Store, namespace, claimName string) (failed bool, message string, err error) {
-
-	obj, exists, err := pvcStore.GetByKey(namespace + "/" + claimName)
-	if err != nil {
-		return false, "", err
-	}
-	if !exists {
-		return false, "", fmt.Errorf("PVC %s/%s does not exists", namespace, claimName)
-	}
-
-	pvc, ok := obj.(*k8sv1.PersistentVolumeClaim)
-	if !ok {
-		return false, "", fmt.Errorf("failed converting %s/%s to a PVC: object is of type %T", namespace, claimName, obj)
-	}
-
-	switch pvc.Status.Phase {
-	case k8sv1.ClaimBound:
-		return false, "", nil
-	case k8sv1.ClaimLost:
-		return true, fmt.Sprintf("PVC %s/%s has lost its underlying PersistentVolume (%s)",
-			namespace, claimName, pvc.Spec.VolumeName), nil
-	case k8sv1.ClaimPending:
-		// PVCs which are pending for >5 minutes are considered as failed.
-		if hasPVCProvisioningTimeout(pvc) {
-			isWFFC, err := IsWaitForFirstConsumer(pvc, storageClassStore)
-			if err != nil {
-				return false, "", err
-			}
-			if isWFFC {
-				// For WaitForFirstConsumer PVCs, it's perfectly normal to be pending for long time
-				// until a consumer pod is scheduled.
-				return false, "", nil
-			}
-
-			return true,
-				fmt.Sprintf("PVC %s/%s is pending for over %s", namespace, claimName, pendingPVCTimeoutThreshold),
-				nil
-		}
-	}
-
-	// No failure is detected, provisioning is still in progress
-	return false, "", nil
-}
-
-func hasPVCProvisioningTimeout(pvc *k8sv1.PersistentVolumeClaim) bool {
-	pendingDuration := time.Now().Sub(pvc.CreationTimestamp.Time)
-	return pendingDuration >= pendingPVCTimeoutThreshold
-}
 
 func IsPVCBlockFromStore(store cache.Store, namespace string, claimName string) (pvc *k8sv1.PersistentVolumeClaim, exists bool, isBlockDevice bool, err error) {
 	obj, exists, err := store.GetByKey(namespace + "/" + claimName)
